@@ -79,7 +79,12 @@ class Engine:
         ordered = self.resolve_order()
         reports = []
         for adapter in ordered:
-            if not adapter.detect():
+            # Check if this adapter has content in the repo to deploy
+            repo_subdir = self.repo_dir / adapter.name
+            has_repo_content = repo_subdir.is_dir() and any(repo_subdir.iterdir())
+
+            if not adapter.detect() and not has_repo_content:
+                # Platform not installed AND nothing in repo — truly skip
                 reports.append(
                     SyncReport(
                         adapter_name=adapter.name,
@@ -88,8 +93,13 @@ class Engine:
                 )
                 continue
 
-            changes = adapter.diff()
-            conflicts = [c for c in changes if c.kind == ChangeKind.MODIFIED]
+            # If platform not detected but repo has content, deploy anyway
+            # (fresh machine bootstrap — deploy() will create the dirs)
+            if adapter.detect():
+                changes = adapter.diff()
+                conflicts = [c for c in changes if c.kind == ChangeKind.MODIFIED]
+            else:
+                conflicts = []
 
             if conflicts and not force:
                 report = SyncReport(
@@ -201,13 +211,18 @@ class Engine:
         """
         from skiall.core.manifest import load_manifest
 
+        from skiall.core.secrets import install_pre_commit_hook
+
         subprocess.run(
             ["git", "clone", remote_url, str(self.repo_dir)],
             check=True,
             capture_output=True,
         )
+        # Git doesn't clone hooks — reinstall the secret guard
+        install_pre_commit_hook(self.repo_dir)
+
         manifest = load_manifest(self.repo_dir / "skiall.yaml")
-        # Deploy all adapters
+        # Deploy all adapters (force=True since this is a fresh machine)
         self.pull(force=True)
         return manifest
 

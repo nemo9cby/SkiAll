@@ -138,13 +138,14 @@ class TestCollectDeploy:
         assert report.success
         assert not (repo_dir / "shared" / "remove").exists()
 
-    def test_deploy_removes_stale_local_entries(self, env):
+    def test_deploy_preserves_local_only_entries(self, env):
+        """Local-only skills are kept (not deleted) to prevent data loss."""
         skills_dir, repo_dir = env
         skills_dir.mkdir(parents=True)
 
-        # Local has a stale skill
-        (skills_dir / "stale").mkdir()
-        (skills_dir / "stale" / "x.txt").write_text("old")
+        # Local has a skill not in repo
+        (skills_dir / "local-only").mkdir()
+        (skills_dir / "local-only" / "x.txt").write_text("my work")
 
         # Repo has a different skill
         repo_shared = repo_dir / "shared" / "fresh"
@@ -155,8 +156,12 @@ class TestCollectDeploy:
         report = adapter.deploy()
 
         assert report.success
-        assert not (skills_dir / "stale").exists()
+        # Local-only skill preserved, not deleted
+        assert (skills_dir / "local-only" / "x.txt").read_text() == "my work"
+        # Repo skill deployed
         assert (skills_dir / "fresh" / "y.txt").read_text() == "new"
+        # Warning about local-only entry
+        assert any("local-only" in w for w in report.warnings)
 
     def test_collect_error_when_dir_missing(self, env):
         _skills_dir, repo_dir = env

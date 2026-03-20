@@ -21,6 +21,7 @@ EXCLUDED_FILENAMES: list[str] = [
     ".credentials.json",
     "auth.json",
     "auth.toml",
+    ".env",
 ]
 
 EXCLUDED_PATTERNS: list[str] = [
@@ -29,6 +30,7 @@ EXCLUDED_PATTERNS: list[str] = [
     "*credentials*",
     "*secret*",
     "*token*",
+    ".env.*",
 ]
 
 SENSITIVE_KEY_PATTERNS: list[str] = [

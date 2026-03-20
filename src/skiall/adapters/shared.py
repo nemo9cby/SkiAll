@@ -104,16 +104,14 @@ class SharedAdapter(BaseAdapter):
 
         skills_dir.mkdir(parents=True, exist_ok=True)
 
-        # Remove local entries that no longer exist in repo
+        # Note: we do NOT delete local-only skills on deploy.
+        # A plain `skiall pull` should never cause data loss.
+        # Local-only entries are preserved and reported as warnings.
         for existing in sorted(skills_dir.iterdir()):
             rel = existing.relative_to(skills_dir)
             repo_path = source / rel
             if not repo_path.exists():
-                if existing.is_dir():
-                    shutil.rmtree(existing)
-                else:
-                    existing.unlink()
-                report.files_synced.append(f"removed {rel}")
+                report.warnings.append(f"{rel} exists locally but not in repo (kept)")
 
         # Copy everything from repo into skills_dir
         for entry in sorted(source.iterdir()):
