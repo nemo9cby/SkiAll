@@ -257,7 +257,10 @@ class TestSkillsSync:
         target = claude_dir / "_targets" / "gstack-browse"
         target.mkdir(parents=True)
         (target / "skill.md").write_text("gstack", encoding="utf-8")
-        (skills / "gstack-browse").symlink_to(target)
+        try:
+            (skills / "gstack-browse").symlink_to(target)
+        except OSError:
+            pytest.skip("Symlinks not supported (Windows without Developer Mode)")
 
         report = adapter.collect()
         assert report.success
@@ -274,7 +277,10 @@ class TestSkillsSync:
 
         target = claude_dir / "_targets" / "browse"
         target.mkdir(parents=True)
-        (skills / "browse").symlink_to(target)
+        try:
+            (skills / "browse").symlink_to(target)
+        except OSError:
+            pytest.skip("Symlinks not supported (Windows without Developer Mode)")
 
         symlinks = adapter.get_symlinks()
         assert len(symlinks) == 1

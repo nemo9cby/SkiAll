@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import textwrap
 from pathlib import Path
 
@@ -246,7 +247,8 @@ class TestGeneratePreCommitHook:
         """Verify the generated hook passes bash -n syntax check."""
         hook_file = tmp_path / "pre-commit"
         hook_file.write_text(generate_pre_commit_hook())
-        result = os.popen(f"bash -n {hook_file} 2>&1").read()
+        # Quote the path to handle spaces in Windows usernames
+        result = os.popen(f'bash -n "{hook_file}" 2>&1').read()
         assert result == "", f"Bash syntax errors:\n{result}"
 
 
@@ -274,8 +276,12 @@ class TestInstallPreCommitHook:
         install_pre_commit_hook(tmp_path)
 
         hook_path = hooks_dir / "pre-commit"
-        mode = hook_path.stat().st_mode
-        assert mode & stat.S_IXUSR, "Hook should be executable by owner"
+        if sys.platform == "win32":
+            # Windows doesn't use Unix file permissions — just check it exists
+            assert hook_path.exists()
+        else:
+            mode = hook_path.stat().st_mode
+            assert mode & stat.S_IXUSR, "Hook should be executable by owner"
 
     def test_overwrites_skiall_hook(self, tmp_path: Path) -> None:
         hooks_dir = tmp_path / ".git" / "hooks"

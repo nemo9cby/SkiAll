@@ -201,6 +201,33 @@ class Engine:
                 cwd=self.repo_dir,
                 capture_output=True,
             )
+            # Check if remote already has content (e.g. pushed from another machine)
+            fetch_result = subprocess.run(
+                ["git", "fetch", "origin"],
+                cwd=self.repo_dir,
+                capture_output=True,
+                text=True,
+            )
+            if fetch_result.returncode == 0:
+                # Check if remote has any branches
+                ls_result = subprocess.run(
+                    ["git", "branch", "-r"],
+                    cwd=self.repo_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                remote_branches = ls_result.stdout.strip()
+                if remote_branches:
+                    # Remote has content — pull it in so we merge with existing config
+                    # Find the default branch name
+                    branch = remote_branches.split("/")[-1].split()[0]
+                    # Set up tracking and merge
+                    subprocess.run(
+                        ["git", "pull", "origin", branch, "--allow-unrelated-histories"],
+                        cwd=self.repo_dir,
+                        capture_output=True,
+                        text=True,
+                    )
 
         return manifest
 
@@ -237,8 +264,23 @@ class Engine:
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if "no tracking information" in stderr or "no remote" in stderr.lower():
-                return  # Local-only repo, no remote to pull from
-            if result.returncode != 0 and stderr:
+                # Try pulling with explicit origin + branch detection
+                branch_result = subprocess.run(
+                    ["git", "branch", "-r"],
+                    cwd=self.repo_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                remote_branches = branch_result.stdout.strip()
+                if remote_branches:
+                    branch = remote_branches.split("/")[-1].split()[0]
+                    subprocess.run(
+                        ["git", "pull", "origin", branch],
+                        cwd=self.repo_dir,
+                        capture_output=True,
+                    )
+                return  # Local-only repo or handled above
+            if stderr:
                 raise RuntimeError(f"git pull failed: {stderr}")
 
     def _git_commit_and_push(self, message: str) -> None:
