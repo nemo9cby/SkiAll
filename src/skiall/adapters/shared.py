@@ -66,15 +66,24 @@ class SharedAdapter(BaseAdapter):
                         existing.unlink()
                     report.files_synced.append(f"removed {rel}")
 
-        # Copy everything from skills_dir into repo
+        # Copy everything from skills_dir into repo (skip symlinks, .git, etc.)
         for entry in sorted(skills_dir.iterdir()):
+            if entry.is_symlink():
+                report.files_skipped.append(f"{entry.name} (symlink)")
+                continue
             rel = entry.relative_to(skills_dir)
             dest = target / rel
             try:
                 if entry.is_dir():
                     if dest.exists():
                         shutil.rmtree(dest)
-                    shutil.copytree(entry, dest)
+                    shutil.copytree(
+                        entry,
+                        dest,
+                        ignore=shutil.ignore_patterns(
+                            ".git", "node_modules", "__pycache__", ".env", ".env.*",
+                        ),
+                    )
                 else:
                     shutil.copy2(entry, dest)
                 report.files_synced.append(str(rel))

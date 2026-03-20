@@ -129,6 +129,11 @@ class Engine:
             report = adapter.collect()
             reports.append(report)
 
+        # Abort git operations if any adapter reported errors
+        has_errors = any(not r.success for r in reports)
+        if has_errors:
+            return reports
+
         self._git_commit_and_push(message)
         return reports
 
@@ -239,14 +244,25 @@ class Engine:
         if not status.stdout.strip():
             return  # Nothing to commit
 
-        subprocess.run(
+        commit_result = subprocess.run(
             ["git", "commit", "-m", message],
             cwd=self.repo_dir,
             capture_output=True,
+            text=True,
         )
-        # Push (best-effort, may fail if no remote)
-        subprocess.run(
+        if commit_result.returncode != 0:
+            stderr = commit_result.stderr.strip()
+            raise RuntimeError(f"git commit failed: {stderr}")
+
+        # Push (best-effort — may fail if no remote configured)
+        push_result = subprocess.run(
             ["git", "push"],
             cwd=self.repo_dir,
             capture_output=True,
+            text=True,
         )
+        if push_result.returncode != 0:
+            stderr = push_result.stderr.strip()
+            # No remote is fine — local-only repos are valid
+            if "no configured push destination" not in stderr.lower() and "no upstream" not in stderr.lower():
+                raise RuntimeError(f"git push failed: {stderr}")

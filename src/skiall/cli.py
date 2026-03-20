@@ -123,10 +123,17 @@ def push(ctx: click.Context, message: str) -> None:
         raise SystemExit(1)
 
     engine = _make_engine(repo_dir)
-    reports = engine.push(message=message)
+    try:
+        reports = engine.push(message=message)
+    except RuntimeError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        raise SystemExit(1)
 
     for report in reports:
         _print_report(report)
+
+    if any(not r.success for r in reports):
+        raise SystemExit(1)
 
 
 @cli.command()

@@ -99,13 +99,21 @@ class ClaudeCodeAdapter(BaseAdapter):
             SyncRule(path="memory", sync_type=SyncType.FULL),
             SyncRule(path="plugins/installed_plugins.json", sync_type=SyncType.FULL),
         ]
-        # skills/ — include only direct (non-symlink) directories.
+        # skills/ — union of local direct dirs + repo skill dirs (for fresh machines)
+        skill_names: set[str] = set()
         skills_dir = self.get_paths().config_dir / "skills"
         if skills_dir.is_dir():
             for child in sorted(skills_dir.iterdir()):
                 if child.is_dir() and not child.is_symlink():
-                    rel = f"skills/{child.name}"
-                    rules.append(SyncRule(path=rel, sync_type=SyncType.FULL))
+                    skill_names.add(child.name)
+        # Also include skills that exist in the repo but not locally yet
+        repo_skills_dir = self._repo_subdir / "skills"
+        if repo_skills_dir.is_dir():
+            for child in sorted(repo_skills_dir.iterdir()):
+                if child.is_dir():
+                    skill_names.add(child.name)
+        for name in sorted(skill_names):
+            rules.append(SyncRule(path=f"skills/{name}", sync_type=SyncType.FULL))
         return rules
 
     def get_merge_rules(self) -> dict[str, list[str]]:
