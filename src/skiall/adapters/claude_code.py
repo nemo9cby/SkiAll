@@ -453,19 +453,48 @@ class ClaudeCodeAdapter(BaseAdapter):
         else:
             result["settings"] = None
 
-        # Skills — separate direct dirs vs symlinks
+        # Skills — classify as bundles, standalone, or symlinked
         skills_dir = config_dir / "skills"
-        direct_skills = []
+        bundles = []
+        standalone_skills = []
         symlinked_skills = []
+        bundle_names: set[str] = set()
         if skills_dir.is_dir():
+            # First pass: identify bundles (git repos containing sub-skills)
+            for child in sorted(skills_dir.iterdir()):
+                if child.is_symlink() or not child.is_dir():
+                    continue
+                git_dir = child / ".git"
+                # A bundle is a directory that contains its own .git AND has
+                # subdirectories that other symlinks point to
+                if git_dir.exists():
+                    sub_skills = sorted(
+                        d.name for d in child.iterdir()
+                        if d.is_dir() and not d.name.startswith(".")
+                        and d.name not in ("node_modules", "__pycache__", "bin", "scripts", "test", "docs")
+                    )
+                    bundles.append({
+                        "name": child.name,
+                        "skills": sub_skills,
+                        "skill_count": len(sub_skills),
+                    })
+                    bundle_names.add(child.name)
+                else:
+                    standalone_skills.append({"name": child.name})
+
+            # Second pass: symlinks (skip those pointing into a known bundle)
             for child in sorted(skills_dir.iterdir()):
                 if child.is_symlink():
                     target = str(child.resolve())
-                    symlinked_skills.append({"name": child.name, "target": target})
-                elif child.is_dir():
-                    file_count = sum(1 for _ in child.rglob("*") if _.is_file())
-                    direct_skills.append({"name": child.name, "files": file_count})
-        result["skills_direct"] = direct_skills
+                    # Classify: points into a bundle, or external?
+                    points_to_bundle = any(
+                        f"/skills/{bn}/" in target for bn in bundle_names
+                    )
+                    if not points_to_bundle:
+                        symlinked_skills.append({"name": child.name, "target": target})
+
+        result["bundles"] = bundles
+        result["skills_standalone"] = standalone_skills
         result["skills_symlinked"] = symlinked_skills
 
         # Plugins

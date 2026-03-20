@@ -250,17 +250,26 @@ def _print_claude_info(p: dict) -> None:
         for pl in plugins:
             click.echo(f"    {pl['name']}  (v{pl['version']}, {pl['scope']})")
 
-    # Direct skills
-    direct = p.get("skills_direct", [])
-    if direct:
-        click.echo(f"\n  Skills - direct ({len(direct)}):")
-        for s in direct:
-            click.echo(f"    {s['name']}/  ({s['files']} files)")
+    # Bundles (git repos containing multiple skills)
+    bundles = p.get("bundles", [])
+    if bundles:
+        click.echo(f"\n  Skill Bundles ({len(bundles)}):")
+        for b in bundles:
+            click.echo(f"    {b['name']}/  ({b['skill_count']} skills)")
+            for skill in b["skills"]:
+                click.echo(f"      - {skill}")
 
-    # Symlinked skills
+    # Standalone skills (not part of a bundle)
+    standalone = p.get("skills_standalone", [])
+    if standalone:
+        click.echo(f"\n  Standalone Skills ({len(standalone)}):")
+        for s in standalone:
+            click.echo(f"    {s['name']}/")
+
+    # Symlinked skills from external sources (not from bundles)
     symlinked = p.get("skills_symlinked", [])
     if symlinked:
-        click.echo(f"\n  Skills - symlinked ({len(symlinked)}):")
+        click.echo(f"\n  External Skill Links ({len(symlinked)}):")
         for s in symlinked:
             click.echo(f"    {s['name']} -> {s['target']}")
 
