@@ -223,10 +223,11 @@ class TestGeneratePreCommitHook:
         hook = generate_pre_commit_hook()
         assert "set -euo pipefail" in hook
 
-    def test_contains_sensitive_patterns(self) -> None:
+    def test_does_not_scan_content(self) -> None:
+        """Hook should NOT grep file content — too many false positives."""
         hook = generate_pre_commit_hook()
-        for pattern in SENSITIVE_KEY_PATTERNS:
-            assert pattern in hook, f"Missing pattern {pattern!r}"
+        assert "scan_content" not in hook
+        assert "grep -iEq" not in hook
 
     def test_contains_excluded_filenames(self) -> None:
         hook = generate_pre_commit_hook()
