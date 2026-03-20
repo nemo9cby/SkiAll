@@ -269,7 +269,8 @@ class Engine:
             stderr = commit_result.stderr.strip()
             raise RuntimeError(f"git commit failed: {stderr}")
 
-        # Push (best-effort — may fail if no remote configured)
+        # Push — use -u on first push to set upstream tracking
+        # Try regular push first, fall back to -u if no upstream
         push_result = subprocess.run(
             ["git", "push"],
             cwd=self.repo_dir,
@@ -278,6 +279,17 @@ class Engine:
         )
         if push_result.returncode != 0:
             stderr = push_result.stderr.strip()
-            # No remote is fine — local-only repos are valid
-            if "no configured push destination" not in stderr.lower() and "no upstream" not in stderr.lower():
+            # No upstream — try setting it with -u
+            if "no upstream" in stderr.lower() or "has no upstream" in stderr.lower():
+                branch = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    cwd=self.repo_dir, capture_output=True, text=True,
+                ).stdout.strip() or "main"
+                push_result = subprocess.run(
+                    ["git", "push", "-u", "origin", branch],
+                    cwd=self.repo_dir, capture_output=True, text=True,
+                )
+                if push_result.returncode != 0:
+                    raise RuntimeError(f"git push failed: {push_result.stderr.strip()}")
+            elif "no configured push destination" not in stderr.lower():
                 raise RuntimeError(f"git push failed: {stderr}")
