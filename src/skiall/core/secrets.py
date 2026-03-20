@@ -1,0 +1,280 @@
+"""Triple-layer secret exclusion for SkiAll.
+
+Layer 1: Hardcoded exclusion list -- patterns that must NEVER be synced.
+Layer 2: .gitignore generation for SkiAll repos.
+Layer 3: Pre-commit hook that scans staged files for secret patterns.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import os
+import re
+import stat
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Layer 1 -- hardcoded exclusion lists
+# ---------------------------------------------------------------------------
+
+EXCLUDED_FILENAMES: list[str] = [
+    ".credentials.json",
+    "auth.json",
+    "auth.toml",
+]
+
+EXCLUDED_PATTERNS: list[str] = [
+    "*.key",
+    "*.pem",
+    "*credentials*",
+    "*secret*",
+    "*token*",
+]
+
+SENSITIVE_KEY_PATTERNS: list[str] = [
+    "api_key",
+    "secret",
+    "token",
+    "password",
+    "credential",
+]
+
+# Pre-compiled regex for scanning file content.  Matches lines that look like
+# key-value assignments (JSON, TOML, YAML, env files, Python dicts) where the
+# key contains one of the sensitive substrings.
+_SENSITIVE_KEY_RE = re.compile(
+    r"""
+    (?:                          # key portion (quoted or bare)
+        ["']?                    # optional opening quote
+        [A-Za-z0-9_.-]*         # prefix chars
+        (?:"""
+    + "|".join(re.escape(p) for p in SENSITIVE_KEY_PATTERNS)
+    + r""")                     # one of the sensitive keywords
+        [A-Za-z0-9_.-]*         # suffix chars
+        ["']?                    # optional closing quote
+    )
+    \s*[:=]\s*                   # separator  (: or =)
+    (?:
+        ["']([^"']{4,})["']      # quoted non-trivial value (group 1)
+      | ([^"'\s]{4,})            # unquoted non-trivial value (group 2)
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def is_excluded(path: Path | str) -> bool:
+    """Check if a file path matches any exclusion pattern.
+
+    Matching is performed against the basename of *path*.  Both the hardcoded
+    filename list and the glob patterns are checked (case-insensitive on the
+    pattern side via ``fnmatch``).
+    """
+    name = Path(path).name
+
+    # Exact filename match (case-sensitive -- these are literal config names).
+    if name in EXCLUDED_FILENAMES:
+        return True
+
+    # Glob pattern match (case-insensitive to catch e.g. "MySecrets.key").
+    name_lower = name.lower()
+    for pattern in EXCLUDED_PATTERNS:
+        if fnmatch.fnmatch(name_lower, pattern.lower()):
+            return True
+
+    return False
+
+
+def scan_for_secrets(content: str) -> list[str]:
+    """Scan file content for potential secrets.
+
+    Returns a list of human-readable warning strings, one per suspicious line.
+    An empty list means no secrets were detected.
+    """
+    warnings: list[str] = []
+    for lineno, line in enumerate(content.splitlines(), start=1):
+        for match in _SENSITIVE_KEY_RE.finditer(line):
+            value = match.group(1) or match.group(2)
+            # Ignore obviously-placeholder values.
+            if value and not _is_placeholder(value):
+                key_fragment = match.group(0).split(":")[0].split("=")[0].strip()
+                warnings.append(
+                    f"Line {lineno}: potential secret in key {key_fragment!r}"
+                )
+    return warnings
+
+
+def generate_gitignore() -> str:
+    """Generate .gitignore content for a SkiAll repo."""
+    lines: list[str] = [
+        "# SkiAll -- auto-generated secret exclusions",
+        "# DO NOT remove these entries; they protect sensitive files.",
+        "",
+    ]
+
+    lines.append("# Excluded filenames")
+    for name in EXCLUDED_FILENAMES:
+        lines.append(name)
+    lines.append("")
+
+    lines.append("# Excluded patterns")
+    for pattern in EXCLUDED_PATTERNS:
+        lines.append(pattern)
+    lines.append("")
+
+    lines.append("# Common secrets")
+    lines.append(".env")
+    lines.append(".env.*")
+    lines.append("*.secret")
+    lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def generate_pre_commit_hook() -> str:
+    """Generate a pre-commit hook script that scans staged files for secrets.
+
+    The generated script is a self-contained Bash script.  It iterates over
+    every staged file and greps for the sensitive key patterns; if any match is
+    found the commit is blocked with a descriptive error message.
+    """
+    # Build a grep pattern that matches any sensitive key near an assignment.
+    grep_patterns = "|".join(re.escape(p) for p in SENSITIVE_KEY_PATTERNS)
+    excluded_names = " ".join(f'"{n}"' for n in EXCLUDED_FILENAMES)
+    excluded_globs = " ".join(f'"{p}"' for p in EXCLUDED_PATTERNS)
+
+    hook = f"""\
+#!/usr/bin/env bash
+# SkiAll pre-commit hook -- scans staged files for secrets.
+# Auto-generated by skiall.core.secrets; do not edit manually.
+
+set -euo pipefail
+
+SENSITIVE_PATTERN='({grep_patterns})'
+EXCLUDED_NAMES=({excluded_names})
+EXCLUDED_GLOBS=({excluded_globs})
+
+blocked=0
+
+is_excluded() {{
+    local file="$1"
+    local base
+    base="$(basename "$file")"
+
+    for name in "${{EXCLUDED_NAMES[@]}}"; do
+        if [[ "$base" == "$name" ]]; then
+            echo "BLOCKED: excluded file '$file' must not be committed."
+            blocked=1
+            return 0
+        fi
+    done
+
+    local base_lower
+    base_lower="$(echo "$base" | tr '[:upper:]' '[:lower:]')"
+    for pattern in "${{EXCLUDED_GLOBS[@]}}"; do
+        local pat_lower
+        pat_lower="$(echo "$pattern" | tr '[:upper:]' '[:lower:]')"
+        # shellcheck disable=SC2254
+        case "$base_lower" in
+            $pat_lower)
+                echo "BLOCKED: excluded pattern '$pattern' matches '$file'."
+                blocked=1
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}}
+
+scan_content() {{
+    local file="$1"
+    # Only scan text files that git considers changed.
+    if git diff --cached --diff-filter=d -- "$file" | \
+       grep -iEq "$SENSITIVE_PATTERN[^=:]*[[:space:]]*[:=]"; then
+        echo "WARNING: potential secret detected in '$file'."
+        blocked=1
+    fi
+}}
+
+# Iterate over all staged files.
+while IFS= read -r -d '' file; do
+    is_excluded "$file" || scan_content "$file"
+done < <(git diff --cached --name-only -z --diff-filter=ACM)
+
+if [[ "$blocked" -ne 0 ]]; then
+    echo ""
+    echo "Commit blocked by SkiAll secret scanner."
+    echo "Remove or .gitignore the flagged files, then try again."
+    exit 1
+fi
+
+exit 0
+"""
+    return hook
+
+
+def install_pre_commit_hook(repo_dir: Path) -> None:
+    """Install the pre-commit hook into a git repo.
+
+    Writes the hook to ``<repo_dir>/.git/hooks/pre-commit``.  If a hook
+    already exists it is overwritten only when it was previously generated by
+    SkiAll (detected via a sentinel comment).  Otherwise a ``FileExistsError``
+    is raised so we never clobber a user's custom hook.
+
+    Raises:
+        FileNotFoundError: *repo_dir* does not contain a ``.git`` directory.
+        FileExistsError: A non-SkiAll pre-commit hook already exists.
+    """
+    hooks_dir = repo_dir / ".git" / "hooks"
+    if not hooks_dir.is_dir():
+        raise FileNotFoundError(
+            f"No .git/hooks directory found at {hooks_dir}. "
+            "Is this a git repository?"
+        )
+
+    hook_path = hooks_dir / "pre-commit"
+    if hook_path.exists():
+        existing = hook_path.read_text(encoding="utf-8")
+        if "SkiAll pre-commit hook" not in existing:
+            raise FileExistsError(
+                f"A pre-commit hook already exists at {hook_path} and was not "
+                "generated by SkiAll. Remove it manually if you want SkiAll "
+                "to manage the hook."
+            )
+
+    hook_content = generate_pre_commit_hook()
+    hook_path.write_text(hook_content, encoding="utf-8")
+
+    # Make executable (owner rwx, group rx, others rx).
+    hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_placeholder(value: str) -> bool:
+    """Return True if *value* looks like a placeholder rather than a real secret."""
+    placeholders = {
+        "null",
+        "none",
+        "true",
+        "false",
+        "changeme",
+        "todo",
+        "fixme",
+        "example",
+        "your_api_key_here",
+        "your_secret_here",
+        "xxx",
+        "xxxx",
+        "test",
+    }
+    stripped = value.strip("\"' ")
+    return stripped.lower() in placeholders
