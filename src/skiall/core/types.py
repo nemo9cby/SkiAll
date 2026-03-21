@@ -87,3 +87,13 @@ class SyncReport:
     @property
     def success(self) -> bool:
         return len(self.errors) == 0
+
+
+def normalized_bytes(path: Path) -> bytes:
+    """Read file bytes with line endings normalized to LF.
+
+    This ensures CRLF vs LF differences (common between Windows and
+    Linux) are not reported as content changes during diff/sync.
+    """
+    data = path.read_bytes()
+    return data.replace(b"\r\n", b"\n")

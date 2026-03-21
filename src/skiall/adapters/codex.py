@@ -23,6 +23,7 @@ from skiall.core.types import (
     SyncReport,
     SyncRule,
     SyncType,
+    normalized_bytes,
 )
 
 # Keys to preserve from config.toml's top-level scope.
@@ -495,7 +496,7 @@ class CodexAdapter(BaseAdapter):
                             Change(path=rel, kind=ChangeKind.MODIFIED, detail="unable to compare config.toml")
                         )
                 else:
-                    if not filecmp.cmp(local_path, repo_path, shallow=False):
+                    if normalized_bytes(local_path) != normalized_bytes(repo_path):
                         changes.append(Change(path=rel, kind=ChangeKind.MODIFIED, detail="content differs"))
 
         return changes

@@ -31,6 +31,7 @@ from skiall.core.types import (
     SyncReport,
     SyncRule,
     SyncType,
+    normalized_bytes,
 )
 
 # Keys we extract from settings.json during partial sync.
@@ -371,8 +372,8 @@ class ClaudeCodeAdapter(BaseAdapter):
     def _diff_file(
         self, repo_path: Path, local_path: Path, rule: SyncRule
     ) -> Change | None:
-        repo_bytes = repo_path.read_bytes()
-        local_bytes = local_path.read_bytes()
+        repo_bytes = normalized_bytes(repo_path)
+        local_bytes = normalized_bytes(local_path)
         if repo_bytes != local_bytes:
             return Change(
                 path=rule.path,
@@ -390,12 +391,12 @@ class ClaudeCodeAdapter(BaseAdapter):
         rule: SyncRule,
     ) -> Change | None:
         repo_files = {
-            str(f.relative_to(repo_path)): f.read_bytes()
+            str(f.relative_to(repo_path)): normalized_bytes(f)
             for f in repo_path.rglob("*")
             if f.is_file()
         }
         local_files = {
-            str(f.relative_to(local_path)): f.read_bytes()
+            str(f.relative_to(local_path)): normalized_bytes(f)
             for f in local_path.rglob("*")
             if f.is_file()
             and not f.is_symlink()

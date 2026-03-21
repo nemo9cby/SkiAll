@@ -18,6 +18,7 @@ from skiall.core.types import (
     SyncReport,
     SyncRule,
     SyncType,
+    normalized_bytes,
 )
 
 
@@ -152,7 +153,7 @@ class SharedAdapter(BaseAdapter):
             local_file = skills_dir / rel
             repo_file = repo / rel
             if local_file.is_file() and repo_file.is_file():
-                if not filecmp.cmp(local_file, repo_file, shallow=False):
+                if normalized_bytes(local_file) != normalized_bytes(repo_file):
                     changes.append(Change(path=str(rel), kind=ChangeKind.MODIFIED, detail="content differs"))
 
         return changes

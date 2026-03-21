@@ -166,10 +166,10 @@ def build_skill_inventory(skills_dir: Path) -> dict[str, bytes]:
                     if any(p in (".git", "node_modules", "__pycache__") for p in parts):
                         continue
                     hasher.update(rel.encode())
-                    hasher.update(f.read_bytes())
+                    hasher.update(f.read_bytes().replace(b"\r\n", b"\n"))
             inventory[entry.name] = hasher.digest()
         elif entry.is_file():
-            inventory[entry.name] = entry.read_bytes()
+            inventory[entry.name] = entry.read_bytes().replace(b"\r\n", b"\n")
 
     return inventory
 
@@ -192,10 +192,10 @@ def build_file_inventory(
         if not full.exists():
             continue
         if full.is_file():
-            inventory[rel_path] = full.read_bytes()
+            inventory[rel_path] = full.read_bytes().replace(b"\r\n", b"\n")
         elif full.is_dir():
             for f in sorted(full.rglob("*")):
                 if f.is_file() and not f.is_symlink():
                     rel = f.relative_to(base_dir).as_posix()
-                    inventory[rel] = f.read_bytes()
+                    inventory[rel] = f.read_bytes().replace(b"\r\n", b"\n")
     return inventory
