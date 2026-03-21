@@ -5,7 +5,9 @@ Used by the `skiall sync` command to merge remote and local state.
 
 from __future__ import annotations
 
+import hashlib
 from enum import Enum
+from pathlib import Path
 
 
 class SyncAction(Enum):
@@ -113,3 +115,66 @@ def _rewrite_install_path(
 
     cache = local_cache_dir.rstrip("/").rstrip("\\")
     return f"{cache}/{registry}/{name_part}/{version}"
+
+
+def build_skill_inventory(skills_dir: Path) -> dict[str, bytes]:
+    """Build an inventory of skills as name -> content hash.
+
+    Directories are hashed by concatenating all file contents.
+    Symlinks are skipped. Standalone files (like .skill) are included.
+
+    Args:
+        skills_dir: path to the skills directory
+
+    Returns:
+        mapping of skill name -> content digest bytes
+    """
+    if not skills_dir.is_dir():
+        return {}
+
+    inventory: dict[str, bytes] = {}
+    for entry in sorted(skills_dir.iterdir()):
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            hasher = hashlib.sha256()
+            for f in sorted(entry.rglob("*")):
+                if f.is_file() and not f.is_symlink():
+                    rel = f.relative_to(entry).as_posix()
+                    parts = rel.split("/")
+                    if any(p in (".git", "node_modules", "__pycache__") for p in parts):
+                        continue
+                    hasher.update(rel.encode())
+                    hasher.update(f.read_bytes())
+            inventory[entry.name] = hasher.digest()
+        elif entry.is_file():
+            inventory[entry.name] = entry.read_bytes()
+
+    return inventory
+
+
+def build_file_inventory(
+    base_dir: Path, paths: list[str]
+) -> dict[str, bytes]:
+    """Build an inventory of individual files/directories.
+
+    Args:
+        base_dir: root directory (e.g., ~/.claude/ or repo/claude-code/)
+        paths: list of relative paths to inventory
+
+    Returns:
+        mapping of relative path -> content bytes
+    """
+    inventory: dict[str, bytes] = {}
+    for rel_path in paths:
+        full = base_dir / rel_path
+        if not full.exists():
+            continue
+        if full.is_file():
+            inventory[rel_path] = full.read_bytes()
+        elif full.is_dir():
+            for f in sorted(full.rglob("*")):
+                if f.is_file() and not f.is_symlink():
+                    rel = f.relative_to(base_dir).as_posix()
+                    inventory[rel] = f.read_bytes()
+    return inventory

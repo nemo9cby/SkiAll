@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from skiall.core.sync import SyncAction, classify_items, merge_plugins
+from pathlib import Path
+from skiall.core.sync import build_skill_inventory, build_file_inventory
 
 
 class TestClassifyItems:
@@ -90,3 +92,56 @@ class TestMergePlugins:
     def test_empty_inputs(self):
         merged = merge_plugins(None, None, local_cache_dir="/x")
         assert merged == {"version": 2, "plugins": {}}
+
+
+class TestBuildSkillInventory:
+    def test_dirs_detected(self, tmp_path: Path):
+        (tmp_path / "skill-a").mkdir()
+        (tmp_path / "skill-a" / "SKILL.md").write_text("hello")
+        (tmp_path / "skill-b").mkdir()
+        (tmp_path / "skill-b" / "SKILL.md").write_text("world")
+        inv = build_skill_inventory(tmp_path)
+        assert "skill-a" in inv
+        assert "skill-b" in inv
+
+    def test_symlinks_skipped(self, tmp_path: Path):
+        real = tmp_path / "real-skill"
+        real.mkdir()
+        (real / "SKILL.md").write_text("content")
+        link = tmp_path / "linked-skill"
+        try:
+            link.symlink_to(real)
+        except OSError:
+            pytest.skip("symlinks not supported on this platform")
+        inv = build_skill_inventory(tmp_path)
+        assert "real-skill" in inv
+        assert "linked-skill" not in inv
+
+    def test_files_included(self, tmp_path: Path):
+        """Standalone .skill files should appear in inventory."""
+        (tmp_path / "my.skill").write_bytes(b"data")
+        inv = build_skill_inventory(tmp_path)
+        assert "my.skill" in inv
+
+    def test_nonexistent_dir(self, tmp_path: Path):
+        inv = build_skill_inventory(tmp_path / "nope")
+        assert inv == {}
+
+
+class TestBuildFileInventory:
+    def test_single_file(self, tmp_path: Path):
+        (tmp_path / "README.md").write_bytes(b"hello")
+        inv = build_file_inventory(tmp_path, ["README.md"])
+        assert "README.md" in inv
+        assert inv["README.md"] == b"hello"
+
+    def test_directory(self, tmp_path: Path):
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "a.md").write_bytes(b"aaa")
+        inv = build_file_inventory(tmp_path, ["memory"])
+        assert "memory/a.md" in inv
+
+    def test_missing_path_skipped(self, tmp_path: Path):
+        inv = build_file_inventory(tmp_path, ["nonexistent.txt"])
+        assert inv == {}
