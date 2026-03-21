@@ -58,6 +58,76 @@ def _resolve_conflict(
     return prompt_conflict(name, item_type)
 
 
+def _sync_partial_rules(
+    rules: list[SyncRule], config_dir: Path, repo_subdir: Path
+) -> None:
+    """Bidirectional partial merge for config files (settings.json, config.toml).
+
+    For each rule: deploy repo keys into local, then collect local keys back to repo.
+    Only touches the declared keys — all other keys in the local file are preserved.
+    """
+    for rule in rules:
+        repo_path = repo_subdir / rule.path
+        local_path = config_dir / rule.path
+
+        if not repo_path.exists() and not local_path.exists():
+            continue
+
+        try:
+            if repo_path.suffix == ".toml":
+                _sync_partial_toml(repo_path, local_path, rule.keys)
+            else:
+                _sync_partial_json(repo_path, local_path, rule.keys)
+        except Exception:
+            # If partial merge fails, skip silently rather than crash the sync
+            pass
+
+
+def _sync_partial_json(repo_path: Path, local_path: Path, keys: list[str]) -> None:
+    """Partial merge for JSON config files (e.g., settings.json)."""
+    import json as _json
+    repo_data = _json.loads(repo_path.read_text(encoding="utf-8")) if repo_path.exists() else {}
+    local_data = _json.loads(local_path.read_text(encoding="utf-8")) if local_path.exists() else {}
+
+    # Deploy: merge repo keys into local
+    for key in keys:
+        if key in repo_data:
+            local_data[key] = repo_data[key]
+
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_text(_json.dumps(local_data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    # Collect: write only synced keys to repo
+    collected = {k: local_data[k] for k in keys if k in local_data}
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+    repo_path.write_text(_json.dumps(collected, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _sync_partial_toml(repo_path: Path, local_path: Path, keys: list[str]) -> None:
+    """Partial merge for TOML config files (e.g., config.toml).
+
+    Uses the Codex adapter's custom TOML parser which handles Windows paths
+    in section headers that stdlib tomllib rejects.
+    """
+    from skiall.adapters.codex import _parse_toml, _dump_toml, _filter_config
+
+    repo_data = _parse_toml(repo_path.read_text(encoding="utf-8")) if repo_path.exists() else {}
+    local_data = _parse_toml(local_path.read_text(encoding="utf-8")) if local_path.exists() else {}
+
+    # Deploy: merge repo keys into local
+    for key in keys:
+        if key in repo_data:
+            local_data[key] = repo_data[key]
+
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_text(_dump_toml(local_data), encoding="utf-8")
+
+    # Collect: write only synced keys to repo
+    collected = _filter_config(local_data)
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+    repo_path.write_text(_dump_toml(collected), encoding="utf-8")
+
+
 class Engine:
     """Orchestrates adapter execution for pull/push operations."""
 
@@ -444,9 +514,27 @@ class Engine:
         if local_data is None and repo_data is None:
             return
 
+        # Save original local installPaths before merge
+        local_paths: dict[str, dict[str, str]] = {}  # name -> {scope -> path}
+        if local_data:
+            for name, entries in local_data.get("plugins", {}).items():
+                for entry in entries:
+                    if "installPath" in entry:
+                        local_paths.setdefault(name, {})[entry.get("scope", "user")] = entry["installPath"]
+
         merged = merge_plugins(repo_data, local_data)
 
-        # Local copy: keep installPath (Claude Code needs it)
+        # Local copy: restore this machine's installPaths (merged may have
+        # remote paths or no paths at all since repo strips them)
+        for name, entries in merged.get("plugins", {}).items():
+            for entry in entries:
+                scope = entry.get("scope", "user")
+                local_path = local_paths.get(name, {}).get(scope)
+                if local_path:
+                    entry["installPath"] = local_path
+                else:
+                    entry.pop("installPath", None)  # Remove stale remote paths
+
         local_plugins_file.parent.mkdir(parents=True, exist_ok=True)
         local_plugins_file.write_text(
             json.dumps(merged, indent=2) + "\n", encoding="utf-8"
@@ -494,10 +582,8 @@ class Engine:
             # Let the adapter's normal collect/deploy handle the actual merge
 
         if not file_paths:
-            # Still need to handle partial rules via adapter
             if partial_rules and adapter.detect():
-                adapter.deploy()
-                adapter.collect()
+                _sync_partial_rules(partial_rules, config_dir, repo_subdir)
             return
 
         repo_inv = build_file_inventory(repo_subdir, file_paths)
@@ -536,10 +622,10 @@ class Engine:
                 else:
                     report.files_skipped.append(f"{rel_path} (skipped)")
 
-        # Handle partial rules via adapter's deploy/collect
+        # Handle partial rules with targeted merge (not full adapter deploy/collect
+        # which would overwrite files like plugins that sync already handled)
         if partial_rules and adapter.detect():
-            adapter.deploy()
-            adapter.collect()
+            _sync_partial_rules(partial_rules, config_dir, repo_subdir)
 
     def _git_pull(self) -> None:
         """Run git pull on the repo directory."""
