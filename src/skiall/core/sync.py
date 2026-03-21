@@ -43,3 +43,73 @@ def classify_items(
         else:
             result[key] = SyncAction.CONFLICT
     return result
+
+
+def merge_plugins(
+    remote_data: dict | None,
+    local_data: dict | None,
+    local_cache_dir: str,
+) -> dict:
+    """Merge two installed_plugins.json structures by unioning plugin names.
+
+    For same (plugin_name, scope) pairs, keeps the entry with newer lastUpdated.
+    Rewrites installPath to use local_cache_dir.
+
+    Args:
+        remote_data: parsed installed_plugins.json from repo (or None)
+        local_data: parsed installed_plugins.json from local (or None)
+        local_cache_dir: absolute path to local plugins cache dir
+
+    Returns:
+        merged installed_plugins.json dict
+    """
+    remote_plugins = (remote_data or {}).get("plugins", {})
+    local_plugins = (local_data or {}).get("plugins", {})
+    all_names = sorted(set(remote_plugins) | set(local_plugins))
+
+    merged: dict[str, list[dict]] = {}
+    for name in all_names:
+        remote_entries = remote_plugins.get(name, [])
+        local_entries = local_plugins.get(name, [])
+
+        # Index by scope for dedup
+        by_scope: dict[str, dict] = {}
+        for entry in remote_entries:
+            scope = entry.get("scope", "user")
+            by_scope[scope] = dict(entry)
+        for entry in local_entries:
+            scope = entry.get("scope", "user")
+            existing = by_scope.get(scope)
+            if existing is None:
+                by_scope[scope] = dict(entry)
+            else:
+                # Keep newer by lastUpdated
+                if entry.get("lastUpdated", "") > existing.get("lastUpdated", ""):
+                    by_scope[scope] = dict(entry)
+
+        # Rewrite installPath for all entries
+        entries = list(by_scope.values())
+        for entry in entries:
+            entry["installPath"] = _rewrite_install_path(
+                entry.get("installPath", ""), name, entry.get("version", ""), local_cache_dir
+            )
+        merged[name] = entries
+
+    return {"version": 2, "plugins": merged}
+
+
+def _rewrite_install_path(
+    original: str, plugin_name: str, version: str, local_cache_dir: str
+) -> str:
+    """Rebuild installPath using local cache dir.
+
+    Plugin name format: "name@registry" -> cache path: <cache_dir>/<registry>/<name>/<version>
+    """
+    if "@" in plugin_name:
+        name_part, registry = plugin_name.rsplit("@", 1)
+    else:
+        name_part = plugin_name
+        registry = "unknown"
+
+    cache = local_cache_dir.rstrip("/").rstrip("\\")
+    return f"{cache}/{registry}/{name_part}/{version}"
