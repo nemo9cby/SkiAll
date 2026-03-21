@@ -123,6 +123,21 @@ def merge_plugins(
     return {"version": 2, "plugins": merged}
 
 
+def strip_install_paths(data: dict) -> dict:
+    """Return a copy of installed_plugins.json with installPath removed.
+
+    Used for the repo copy — installPath is machine-specific and should
+    not be stored in the portable sync repo.
+    """
+    stripped: dict[str, list[dict]] = {}
+    for name, entries in data.get("plugins", {}).items():
+        stripped[name] = []
+        for entry in entries:
+            clean = {k: v for k, v in entry.items() if k != "installPath"}
+            stripped[name].append(clean)
+    return {"version": 2, "plugins": stripped}
+
+
 def build_skill_inventory(skills_dir: Path) -> dict[str, bytes]:
     """Build an inventory of skills as name -> content hash.
 

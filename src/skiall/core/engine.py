@@ -38,6 +38,7 @@ from skiall.core.sync import (
     classify_items,
     merge_plugins,
     prompt_conflict,
+    strip_install_paths,
 )
 from skiall.core.types import Change, ChangeKind, SyncReport, SyncRule, SyncType
 
@@ -422,13 +423,17 @@ class Engine:
 
         merged = merge_plugins(repo_data, local_data)
 
+        # Local copy: keep installPath (Claude Code needs it)
         local_plugins_file.parent.mkdir(parents=True, exist_ok=True)
         local_plugins_file.write_text(
             json.dumps(merged, indent=2) + "\n", encoding="utf-8"
         )
+
+        # Repo copy: strip installPath (machine-specific, not portable)
+        repo_merged = strip_install_paths(merged)
         repo_plugins_file.parent.mkdir(parents=True, exist_ok=True)
         repo_plugins_file.write_text(
-            json.dumps(merged, indent=2) + "\n", encoding="utf-8"
+            json.dumps(repo_merged, indent=2) + "\n", encoding="utf-8"
         )
         report.files_synced.append("plugins/installed_plugins.json (merged)")
 
