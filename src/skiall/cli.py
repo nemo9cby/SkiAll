@@ -168,6 +168,8 @@ def status(ctx: click.Context) -> None:
 @click.pass_context
 def diff(ctx: click.Context) -> None:
     """Show detailed changes between repo and local state."""
+    import difflib
+
     repo_dir = ctx.obj["repo_dir"]
     if not repo_dir.exists():
         click.echo("No SkiAll repo found.", err=True)
@@ -178,18 +180,93 @@ def diff(ctx: click.Context) -> None:
 
     total_changes = 0
     for adapter_name, changes in all_changes.items():
+        adapter = engine.adapters[adapter_name]
+        config_dir = adapter.get_paths().config_dir
+        repo_subdir = repo_dir / adapter_name
+
         meaningful = [c for c in changes if c.kind != ChangeKind.UNCHANGED]
         if not meaningful:
             continue
         click.echo(f"\n=== {adapter_name} ===")
         for change in meaningful:
             click.echo(f"  [{change.kind.value}] {change.path}")
-            if change.detail:
-                click.echo(f"           {change.detail}")
             total_changes += 1
+
+            if change.kind == ChangeKind.MODIFIED:
+                _show_file_diff(config_dir, repo_subdir, change.path)
+            elif change.kind == ChangeKind.ADDED:
+                click.echo(f"           (local only — not in repo)")
+            elif change.kind == ChangeKind.DELETED:
+                click.echo(f"           (repo only — not on local)")
 
     if total_changes == 0:
         click.echo("Everything in sync.")
+
+
+def _show_file_diff(config_dir: Path, repo_subdir: Path, rel_path: str) -> None:
+    """Show unified diff between local and repo versions of a file."""
+    import difflib
+
+    local_path = config_dir / rel_path
+    repo_path = repo_subdir / rel_path
+
+    # For directories, find and diff individual files
+    if local_path.is_dir() and repo_path.is_dir():
+        local_files = {str(f.relative_to(local_path)): f for f in local_path.rglob("*") if f.is_file()}
+        repo_files = {str(f.relative_to(repo_path)): f for f in repo_path.rglob("*") if f.is_file()}
+        all_files = sorted(set(local_files) | set(repo_files))
+        for fname in all_files:
+            if fname in local_files and fname not in repo_files:
+                click.echo(click.style(f"           + {fname} (local only)", fg="green"))
+            elif fname not in local_files and fname in repo_files:
+                click.echo(click.style(f"           - {fname} (repo only)", fg="red"))
+            elif fname in local_files and fname in repo_files:
+                _diff_single_file(local_files[fname], repo_files[fname], f"{rel_path}/{fname}")
+        return
+
+    if local_path.is_file() and repo_path.is_file():
+        _diff_single_file(local_path, repo_path, rel_path)
+
+
+def _diff_single_file(local_path: Path, repo_path: Path, label: str) -> None:
+    """Show unified diff for a single file pair."""
+    import difflib
+
+    try:
+        local_text = local_path.read_text(encoding="utf-8")
+        repo_text = repo_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        click.echo(f"           (binary or unreadable)")
+        return
+
+    # Normalize line endings for comparison
+    local_lines = local_text.splitlines(keepends=True)
+    repo_lines = repo_text.splitlines(keepends=True)
+
+    diff_lines = list(difflib.unified_diff(
+        repo_lines, local_lines,
+        fromfile=f"repo/{label}",
+        tofile=f"local/{label}",
+        n=3,
+    ))
+    if not diff_lines:
+        # Content same after line-ending normalization
+        if local_path.read_bytes() != repo_path.read_bytes():
+            click.echo(click.style(f"           (line endings differ only)", dim=True))
+        return
+
+    for line in diff_lines:
+        line = line.rstrip("\n")
+        if line.startswith("+++") or line.startswith("---"):
+            click.echo(click.style(f"           {line}", bold=True))
+        elif line.startswith("+"):
+            click.echo(click.style(f"           {line}", fg="green"))
+        elif line.startswith("-"):
+            click.echo(click.style(f"           {line}", fg="red"))
+        elif line.startswith("@@"):
+            click.echo(click.style(f"           {line}", fg="cyan"))
+        else:
+            click.echo(f"           {line}")
 
 
 @cli.command()
