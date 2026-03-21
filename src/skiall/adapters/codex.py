@@ -441,11 +441,14 @@ class CodexAdapter(BaseAdapter):
         local_files: dict[str, Path] = {}
         if codex_dir.is_dir():
             for path in codex_dir.rglob("*"):
-                if not path.is_file():
-                    continue
                 rel = str(path.relative_to(codex_dir))
                 if _is_excluded(rel):
                     continue
+                try:
+                    if not path.is_file():
+                        continue
+                except OSError:
+                    continue  # Inaccessible path (e.g., locked temp files on Windows)
                 local_files[rel] = path
 
         # ~/AGENTS.md
