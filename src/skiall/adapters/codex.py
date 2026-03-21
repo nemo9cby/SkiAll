@@ -46,6 +46,8 @@ _EXCLUSIONS: list[str] = [
     "log/*",
     "logs_*.sqlite",
     "state_*.sqlite",
+    "state_*.sqlite-shm",
+    "state_*.sqlite-wal",
     "models_cache.json",
     "shell_snapshots",
     "shell_snapshots/*",
@@ -55,6 +57,15 @@ _EXCLUSIONS: list[str] = [
     ".personality_migration",
     "skills/.system",
     "skills/.system/*",
+    "bin",
+    "bin/*",
+    "vendor_imports",
+    "vendor_imports/*",
+    "sqlite",
+    "sqlite/*",
+    "session_index.jsonl",
+    "rules",
+    "rules/*",
 ]
 
 
