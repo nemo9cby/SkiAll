@@ -24,10 +24,21 @@ Push flow:
 
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
 from pathlib import Path
 
 from skiall.adapters.base import BaseAdapter
+from skiall.core.sync import (
+    SyncAction,
+    ConflictChoice,
+    build_file_inventory,
+    build_skill_inventory,
+    classify_items,
+    merge_plugins,
+    prompt_conflict,
+)
 from skiall.core.types import Change, ChangeKind, SyncReport
 
 
@@ -252,6 +263,224 @@ class Engine:
         # Deploy all adapters (force=True since this is a fresh machine)
         self.pull(force=True)
         return manifest
+
+    def sync(
+        self,
+        remote_url: str | None = None,
+        message: str = "skiall sync",
+    ) -> list[SyncReport]:
+        """Full sync: pull remote, merge with local, push result.
+
+        1. Ensure repo exists (clone or pull)
+        2. For each adapter: classify items, resolve conflicts, merge
+        3. Commit and push
+        """
+        self._ensure_repo(remote_url)
+        ordered = self.resolve_order()
+        reports: list[SyncReport] = []
+
+        for adapter in ordered:
+            repo_subdir = self.repo_dir / adapter.name
+            has_repo_content = repo_subdir.is_dir() and any(repo_subdir.iterdir()) if repo_subdir.is_dir() else False
+
+            if not adapter.detect() and not has_repo_content:
+                reports.append(SyncReport(
+                    adapter_name=adapter.name,
+                    warnings=[f"Platform '{adapter.name}' not detected and no repo content, skipping"],
+                ))
+                continue
+
+            report = self._sync_adapter(adapter)
+            reports.append(report)
+
+        has_errors = any(not r.success for r in reports)
+        if not has_errors:
+            self._git_commit_and_push(message)
+
+        return reports
+
+    def _ensure_repo(self, remote_url: str | None = None) -> None:
+        """Ensure the sync repo exists. Clone if needed, pull if exists."""
+        git_dir = self.repo_dir / ".git"
+        if git_dir.is_dir():
+            self._git_pull()
+        elif remote_url:
+            subprocess.run(
+                ["git", "clone", remote_url, str(self.repo_dir)],
+                check=True,
+                capture_output=True,
+            )
+            from skiall.core.secrets import install_pre_commit_hook
+            install_pre_commit_hook(self.repo_dir)
+        else:
+            raise RuntimeError(
+                "No SkiAll repo found. Provide a repo URL for first-time sync."
+            )
+
+    def _sync_adapter(self, adapter: BaseAdapter) -> SyncReport:
+        """Run the sync merge logic for a single adapter."""
+        report = SyncReport(adapter_name=adapter.name)
+        config_dir = adapter.get_paths().config_dir
+        repo_subdir = self.repo_dir / adapter.name
+
+        self._sync_skills(adapter, config_dir, repo_subdir, report)
+
+        if adapter.name == "claude-code":
+            self._sync_plugins(config_dir, repo_subdir, report)
+
+        self._sync_files(adapter, config_dir, repo_subdir, report)
+
+        return report
+
+    def _sync_skills(
+        self, adapter: BaseAdapter, config_dir: Path, repo_subdir: Path, report: SyncReport
+    ) -> None:
+        """Sync skills directories with interactive conflict resolution."""
+        if adapter.name == "claude-code":
+            local_skills = config_dir / "skills"
+            repo_skills = repo_subdir / "skills"
+        elif adapter.name == "shared":
+            local_skills = config_dir
+            repo_skills = repo_subdir
+        elif adapter.name == "codex":
+            local_skills = config_dir / "skills"
+            repo_skills = repo_subdir / "skills"
+        else:
+            return
+
+        local_inv = build_skill_inventory(local_skills)
+        repo_inv = build_skill_inventory(repo_skills)
+
+        if not local_inv and not repo_inv:
+            return
+
+        classified = classify_items(repo_inv, local_inv)
+
+        for name, action in classified.items():
+            local_path = local_skills / name
+            repo_path = repo_skills / name
+
+            if action == SyncAction.REMOTE_ONLY:
+                local_skills.mkdir(parents=True, exist_ok=True)
+                if repo_path.is_dir():
+                    shutil.copytree(repo_path, local_path)
+                else:
+                    shutil.copy2(repo_path, local_path)
+                report.files_synced.append(f"skills/{name} (remote -> local)")
+
+            elif action == SyncAction.LOCAL_ONLY:
+                repo_skills.mkdir(parents=True, exist_ok=True)
+                if local_path.is_dir():
+                    ignore = shutil.ignore_patterns(".git", "node_modules", "__pycache__", ".env", ".env.*")
+                    shutil.copytree(local_path, repo_path, ignore=ignore)
+                else:
+                    shutil.copy2(local_path, repo_path)
+                report.files_synced.append(f"skills/{name} (local -> repo)")
+
+            elif action == SyncAction.CONFLICT:
+                choice = prompt_conflict(name, "skill")
+                if choice == ConflictChoice.LOCAL:
+                    if repo_path.is_dir():
+                        shutil.rmtree(repo_path)
+                    if local_path.is_dir():
+                        ignore = shutil.ignore_patterns(".git", "node_modules", "__pycache__", ".env", ".env.*")
+                        shutil.copytree(local_path, repo_path, ignore=ignore)
+                    else:
+                        shutil.copy2(local_path, repo_path)
+                    report.files_synced.append(f"skills/{name} (kept local)")
+                elif choice == ConflictChoice.REMOTE:
+                    if local_path.is_dir():
+                        shutil.rmtree(local_path)
+                    if repo_path.is_dir():
+                        shutil.copytree(repo_path, local_path)
+                    else:
+                        shutil.copy2(repo_path, local_path)
+                    report.files_synced.append(f"skills/{name} (kept remote)")
+                else:
+                    report.files_skipped.append(f"skills/{name} (skipped)")
+
+    def _sync_plugins(
+        self, config_dir: Path, repo_subdir: Path, report: SyncReport
+    ) -> None:
+        """Merge installed_plugins.json by unioning plugin names."""
+        local_plugins_file = config_dir / "plugins" / "installed_plugins.json"
+        repo_plugins_file = repo_subdir / "plugins" / "installed_plugins.json"
+
+        local_data = None
+        repo_data = None
+        if local_plugins_file.is_file():
+            local_data = json.loads(local_plugins_file.read_text(encoding="utf-8"))
+        if repo_plugins_file.is_file():
+            repo_data = json.loads(repo_plugins_file.read_text(encoding="utf-8"))
+
+        if local_data is None and repo_data is None:
+            return
+
+        cache_dir = str(config_dir / "plugins" / "cache")
+        merged = merge_plugins(repo_data, local_data, local_cache_dir=cache_dir)
+
+        local_plugins_file.parent.mkdir(parents=True, exist_ok=True)
+        local_plugins_file.write_text(
+            json.dumps(merged, indent=2) + "\n", encoding="utf-8"
+        )
+        repo_plugins_file.parent.mkdir(parents=True, exist_ok=True)
+        repo_plugins_file.write_text(
+            json.dumps(merged, indent=2) + "\n", encoding="utf-8"
+        )
+        report.files_synced.append("plugins/installed_plugins.json (merged)")
+
+    def _sync_files(
+        self, adapter: BaseAdapter, config_dir: Path, repo_subdir: Path, report: SyncReport
+    ) -> None:
+        """Sync individual files (CLAUDE.md, memory/, settings.json, etc.)."""
+        file_paths: list[str] = []
+        for rule in adapter.get_sync_rules():
+            if rule.path.startswith("skills"):
+                continue
+            if rule.path.startswith("plugins"):
+                continue
+            if rule.path == ".":
+                continue
+            file_paths.append(rule.path)
+
+        if not file_paths:
+            return
+
+        repo_inv = build_file_inventory(repo_subdir, file_paths)
+        local_inv = build_file_inventory(config_dir, file_paths)
+
+        classified = classify_items(repo_inv, local_inv)
+
+        for rel_path, action in classified.items():
+            repo_path = repo_subdir / rel_path
+            local_path = config_dir / rel_path
+
+            if action == SyncAction.REMOTE_ONLY:
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(repo_path, local_path)
+                report.files_synced.append(f"{rel_path} (remote -> local)")
+
+            elif action == SyncAction.LOCAL_ONLY:
+                repo_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(local_path, repo_path)
+                report.files_synced.append(f"{rel_path} (local -> repo)")
+
+            elif action == SyncAction.CONFLICT:
+                item_type = "file"
+                if "memory" in rel_path:
+                    item_type = "memory"
+                elif rel_path.endswith(".md"):
+                    item_type = "config"
+
+                choice = prompt_conflict(rel_path, item_type)
+                if choice == ConflictChoice.LOCAL:
+                    shutil.copy2(local_path, repo_path)
+                    report.files_synced.append(f"{rel_path} (kept local)")
+                elif choice == ConflictChoice.REMOTE:
+                    shutil.copy2(repo_path, local_path)
+                    report.files_synced.append(f"{rel_path} (kept remote)")
+                else:
+                    report.files_skipped.append(f"{rel_path} (skipped)")
 
     def _git_pull(self) -> None:
         """Run git pull on the repo directory."""

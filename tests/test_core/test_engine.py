@@ -167,3 +167,27 @@ class TestSetup:
         assert (repo_dir / "skiall.yaml").exists()
         assert (repo_dir / ".gitignore").exists()
         assert "platforms" in manifest
+
+
+class TestSync:
+    def test_sync_clones_when_no_repo(self, tmp_path: Path):
+        """sync() with a URL and no existing repo should call _ensure_repo."""
+        repo_dir = tmp_path / "skiall-repo"
+        a = FakeAdapter(repo_dir, "a")
+        engine = Engine(repo_dir, [a])
+        engine._ensure_repo = MagicMock()
+        engine._git_commit_and_push = MagicMock()
+        engine.sync(remote_url="https://example.com/repo.git")
+        engine._ensure_repo.assert_called_once_with("https://example.com/repo.git")
+
+    def test_sync_pulls_when_repo_exists(self, tmp_path: Path):
+        """sync() with existing repo should call _ensure_repo with None."""
+        repo_dir = tmp_path / "skiall-repo"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        a = FakeAdapter(repo_dir, "a")
+        engine = Engine(repo_dir, [a])
+        engine._ensure_repo = MagicMock()
+        engine._git_commit_and_push = MagicMock()
+        engine.sync()
+        engine._ensure_repo.assert_called_once_with(None)
