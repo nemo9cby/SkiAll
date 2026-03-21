@@ -60,7 +60,7 @@ class TestMergePlugins:
                 "plugin-b@registry": [{"scope": "user", "installPath": "C:\\Users\\u\\.claude\\plugins\\cache\\registry\\plugin-b\\2.0", "version": "2.0", "installedAt": "2026-02-01T00:00:00Z", "lastUpdated": "2026-02-01T00:00:00Z"}],
             },
         }
-        merged = merge_plugins(remote, local, local_cache_dir="/home/me/.claude/plugins/cache")
+        merged = merge_plugins(remote, local)
         assert "plugin-a@registry" in merged["plugins"]
         assert "plugin-b@registry" in merged["plugins"]
 
@@ -69,7 +69,7 @@ class TestMergePlugins:
         new_entry = {"scope": "user", "installPath": "/new/path", "version": "2.0", "installedAt": "2026-01-01T00:00:00Z", "lastUpdated": "2026-03-01T00:00:00Z"}
         remote = {"version": 2, "plugins": {"p@r": [old_entry]}}
         local = {"version": 2, "plugins": {"p@r": [new_entry]}}
-        merged = merge_plugins(remote, local, local_cache_dir="/home/me/.claude/plugins/cache")
+        merged = merge_plugins(remote, local)
         assert len(merged["plugins"]["p@r"]) == 1
         assert merged["plugins"]["p@r"][0]["version"] == "2.0"
 
@@ -78,19 +78,20 @@ class TestMergePlugins:
         local_entry = {"scope": "local", "projectPath": "/proj", "installPath": "/p", "version": "1.0", "installedAt": "2026-02-01T00:00:00Z", "lastUpdated": "2026-02-01T00:00:00Z"}
         remote = {"version": 2, "plugins": {"p@r": [user_entry]}}
         local = {"version": 2, "plugins": {"p@r": [local_entry]}}
-        merged = merge_plugins(remote, local, local_cache_dir="/home/me/.claude/plugins/cache")
+        merged = merge_plugins(remote, local)
         assert len(merged["plugins"]["p@r"]) == 2
 
-    def test_install_path_rewritten(self):
+    def test_install_path_preserved(self):
+        """installPath is left as-is — each machine's Claude Code manages its own paths."""
         entry = {"scope": "user", "installPath": "/home/other/.claude/plugins/cache/registry/name/1.0", "version": "1.0", "installedAt": "2026-01-01T00:00:00Z", "lastUpdated": "2026-01-01T00:00:00Z"}
         remote = {"version": 2, "plugins": {"name@registry": [entry]}}
         local = {"version": 2, "plugins": {}}
-        merged = merge_plugins(remote, local, local_cache_dir="/home/me/.claude/plugins/cache")
+        merged = merge_plugins(remote, local)
         path = merged["plugins"]["name@registry"][0]["installPath"]
-        assert path.startswith("/home/me/.claude/plugins/cache/")
+        assert path == "/home/other/.claude/plugins/cache/registry/name/1.0"
 
     def test_empty_inputs(self):
-        merged = merge_plugins(None, None, local_cache_dir="/x")
+        merged = merge_plugins(None, None)
         assert merged == {"version": 2, "plugins": {}}
 
 

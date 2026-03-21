@@ -420,8 +420,7 @@ class Engine:
         if local_data is None and repo_data is None:
             return
 
-        cache_dir = str(config_dir / "plugins" / "cache")
-        merged = merge_plugins(repo_data, local_data, local_cache_dir=cache_dir)
+        merged = merge_plugins(repo_data, local_data)
 
         local_plugins_file.parent.mkdir(parents=True, exist_ok=True)
         local_plugins_file.write_text(

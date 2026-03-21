@@ -81,17 +81,15 @@ def classify_items(
 def merge_plugins(
     remote_data: dict | None,
     local_data: dict | None,
-    local_cache_dir: str,
 ) -> dict:
     """Merge two installed_plugins.json structures by unioning plugin names.
 
     For same (plugin_name, scope) pairs, keeps the entry with newer lastUpdated.
-    Rewrites installPath to use local_cache_dir.
+    installPath is left as-is — each machine's Claude Code manages its own paths.
 
     Args:
         remote_data: parsed installed_plugins.json from repo (or None)
         local_data: parsed installed_plugins.json from local (or None)
-        local_cache_dir: absolute path to local plugins cache dir
 
     Returns:
         merged installed_plugins.json dict
@@ -120,32 +118,9 @@ def merge_plugins(
                 if entry.get("lastUpdated", "") > existing.get("lastUpdated", ""):
                     by_scope[scope] = dict(entry)
 
-        # Rewrite installPath for all entries
-        entries = list(by_scope.values())
-        for entry in entries:
-            entry["installPath"] = _rewrite_install_path(
-                entry.get("installPath", ""), name, entry.get("version", ""), local_cache_dir
-            )
-        merged[name] = entries
+        merged[name] = list(by_scope.values())
 
     return {"version": 2, "plugins": merged}
-
-
-def _rewrite_install_path(
-    original: str, plugin_name: str, version: str, local_cache_dir: str
-) -> str:
-    """Rebuild installPath using local cache dir.
-
-    Plugin name format: "name@registry" -> cache path: <cache_dir>/<registry>/<name>/<version>
-    """
-    if "@" in plugin_name:
-        name_part, registry = plugin_name.rsplit("@", 1)
-    else:
-        name_part = plugin_name
-        registry = "unknown"
-
-    cache = local_cache_dir.rstrip("/").rstrip("\\")
-    return f"{cache}/{registry}/{name_part}/{version}"
 
 
 def build_skill_inventory(skills_dir: Path) -> dict[str, bytes]:
