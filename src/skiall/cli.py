@@ -195,18 +195,47 @@ def diff(ctx: click.Context) -> None:
 @cli.command()
 @click.argument("repo_url", required=False, default=None)
 @click.option("-m", "--message", default="skiall sync", help="Commit message.")
+@click.option(
+    "-s", "--skip-conflicts", is_flag=True,
+    help="Skip all conflicts instead of prompting interactively.",
+)
+@click.option(
+    "-l", "--keep-local", is_flag=True,
+    help="Keep local version for all conflicts.",
+)
+@click.option(
+    "-r", "--keep-remote", is_flag=True,
+    help="Keep remote version for all conflicts.",
+)
 @click.pass_context
-def sync(ctx: click.Context, repo_url: str | None, message: str) -> None:
+def sync(
+    ctx: click.Context,
+    repo_url: str | None,
+    message: str,
+    skip_conflicts: bool,
+    keep_local: bool,
+    keep_remote: bool,
+) -> None:
     """Pull remote config, merge with local state, and push back.
 
     First time: skiall sync <repo-url>
     After that: skiall sync
     """
+    conflict_strategy = None
+    if skip_conflicts:
+        conflict_strategy = "skip"
+    elif keep_local:
+        conflict_strategy = "local"
+    elif keep_remote:
+        conflict_strategy = "remote"
+
     repo_dir = ctx.obj["repo_dir"]
     engine = _make_engine(repo_dir)
 
     try:
-        reports = engine.sync(remote_url=repo_url, message=message)
+        reports = engine.sync(
+            remote_url=repo_url, message=message, conflict_strategy=conflict_strategy
+        )
     except RuntimeError as e:
         click.echo(f"ERROR: {e}", err=True)
         raise SystemExit(1)

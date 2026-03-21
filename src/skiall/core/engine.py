@@ -42,6 +42,21 @@ from skiall.core.sync import (
 )
 from skiall.core.types import Change, ChangeKind, SyncReport, SyncRule, SyncType
 
+_STRATEGY_MAP = {
+    "skip": ConflictChoice.SKIP,
+    "local": ConflictChoice.LOCAL,
+    "remote": ConflictChoice.REMOTE,
+}
+
+
+def _resolve_conflict(
+    name: str, item_type: str, strategy: str | None
+) -> ConflictChoice:
+    """Resolve a conflict either automatically or by prompting the user."""
+    if strategy is not None:
+        return _STRATEGY_MAP[strategy]
+    return prompt_conflict(name, item_type)
+
 
 class Engine:
     """Orchestrates adapter execution for pull/push operations."""
@@ -269,12 +284,17 @@ class Engine:
         self,
         remote_url: str | None = None,
         message: str = "skiall sync",
+        conflict_strategy: str | None = None,
     ) -> list[SyncReport]:
         """Full sync: pull remote, merge with local, push result.
 
         1. Ensure repo exists (clone or pull)
         2. For each adapter: classify items, resolve conflicts, merge
         3. Commit and push
+
+        Args:
+            conflict_strategy: "skip", "local", or "remote" to auto-resolve
+                all conflicts without prompting. None = interactive prompt.
         """
         self._ensure_repo(remote_url)
         ordered = self.resolve_order()
@@ -291,7 +311,7 @@ class Engine:
                 ))
                 continue
 
-            report = self._sync_adapter(adapter)
+            report = self._sync_adapter(adapter, conflict_strategy=conflict_strategy)
             reports.append(report)
 
         has_errors = any(not r.success for r in reports)
@@ -318,25 +338,28 @@ class Engine:
                 "No SkiAll repo found. Provide a repo URL for first-time sync."
             )
 
-    def _sync_adapter(self, adapter: BaseAdapter) -> SyncReport:
+    def _sync_adapter(
+        self, adapter: BaseAdapter, conflict_strategy: str | None = None
+    ) -> SyncReport:
         """Run the sync merge logic for a single adapter."""
         report = SyncReport(adapter_name=adapter.name)
         config_dir = adapter.get_paths().config_dir
         repo_subdir = self.repo_dir / adapter.name
 
-        self._sync_skills(adapter, config_dir, repo_subdir, report)
+        self._sync_skills(adapter, config_dir, repo_subdir, report, conflict_strategy)
 
         if adapter.name == "claude-code":
             self._sync_plugins(config_dir, repo_subdir, report)
 
-        self._sync_files(adapter, config_dir, repo_subdir, report)
+        self._sync_files(adapter, config_dir, repo_subdir, report, conflict_strategy)
 
         return report
 
     def _sync_skills(
-        self, adapter: BaseAdapter, config_dir: Path, repo_subdir: Path, report: SyncReport
+        self, adapter: BaseAdapter, config_dir: Path, repo_subdir: Path,
+        report: SyncReport, conflict_strategy: str | None = None,
     ) -> None:
-        """Sync skills directories with interactive conflict resolution."""
+        """Sync skills directories with conflict resolution."""
         if adapter.name == "claude-code":
             local_skills = config_dir / "skills"
             repo_skills = repo_subdir / "skills"
@@ -382,7 +405,7 @@ class Engine:
                 report.files_synced.append(f"skills/{name} (local -> repo)")
 
             elif action == SyncAction.CONFLICT:
-                choice = prompt_conflict(name, "skill")
+                choice = _resolve_conflict(name, "skill", conflict_strategy)
                 if choice == ConflictChoice.LOCAL:
                     if repo_path.is_dir():
                         shutil.rmtree(repo_path)
@@ -438,7 +461,8 @@ class Engine:
         report.files_synced.append("plugins/installed_plugins.json (merged)")
 
     def _sync_files(
-        self, adapter: BaseAdapter, config_dir: Path, repo_subdir: Path, report: SyncReport
+        self, adapter: BaseAdapter, config_dir: Path, repo_subdir: Path,
+        report: SyncReport, conflict_strategy: str | None = None,
     ) -> None:
         """Sync individual files (CLAUDE.md, memory/, AGENTS.md, etc.)."""
         file_paths: list[str] = []
@@ -502,7 +526,7 @@ class Engine:
                 elif rel_path.endswith(".md"):
                     item_type = "config"
 
-                choice = prompt_conflict(rel_path, item_type)
+                choice = _resolve_conflict(rel_path, item_type, conflict_strategy)
                 if choice == ConflictChoice.LOCAL:
                     shutil.copy2(local_path, repo_path)
                     report.files_synced.append(f"{rel_path} (kept local)")
