@@ -39,7 +39,7 @@ from skiall.core.sync import (
     merge_plugins,
     prompt_conflict,
 )
-from skiall.core.types import Change, ChangeKind, SyncReport
+from skiall.core.types import Change, ChangeKind, SyncReport, SyncRule, SyncType
 
 
 class Engine:
@@ -345,6 +345,8 @@ class Engine:
         elif adapter.name == "codex":
             local_skills = config_dir / "skills"
             repo_skills = repo_subdir / "skills"
+            if not local_skills.is_dir() and not repo_skills.is_dir():
+                return
         else:
             return
 
@@ -363,7 +365,8 @@ class Engine:
             if action == SyncAction.REMOTE_ONLY:
                 local_skills.mkdir(parents=True, exist_ok=True)
                 if repo_path.is_dir():
-                    shutil.copytree(repo_path, local_path)
+                    ignore = shutil.ignore_patterns(".git", "node_modules", "__pycache__", ".env", ".env.*")
+                    shutil.copytree(repo_path, local_path, ignore=ignore)
                 else:
                     shutil.copy2(repo_path, local_path)
                 report.files_synced.append(f"skills/{name} (remote -> local)")
@@ -392,7 +395,8 @@ class Engine:
                     if local_path.is_dir():
                         shutil.rmtree(local_path)
                     if repo_path.is_dir():
-                        shutil.copytree(repo_path, local_path)
+                        ignore = shutil.ignore_patterns(".git", "node_modules", "__pycache__", ".env", ".env.*")
+                        shutil.copytree(repo_path, local_path, ignore=ignore)
                     else:
                         shutil.copy2(repo_path, local_path)
                     report.files_synced.append(f"skills/{name} (kept remote)")
@@ -432,8 +436,9 @@ class Engine:
     def _sync_files(
         self, adapter: BaseAdapter, config_dir: Path, repo_subdir: Path, report: SyncReport
     ) -> None:
-        """Sync individual files (CLAUDE.md, memory/, settings.json, etc.)."""
+        """Sync individual files (CLAUDE.md, memory/, AGENTS.md, etc.)."""
         file_paths: list[str] = []
+        partial_rules: list[SyncRule] = []
         for rule in adapter.get_sync_rules():
             if rule.path.startswith("skills"):
                 continue
@@ -441,9 +446,30 @@ class Engine:
                 continue
             if rule.path == ".":
                 continue
+            if rule.sync_type == SyncType.PARTIAL:
+                partial_rules.append(rule)
+                continue
             file_paths.append(rule.path)
 
+        # Handle PARTIAL sync rules using adapter's existing merge logic
+        for rule in partial_rules:
+            repo_path = repo_subdir / rule.path
+            local_path = config_dir / rule.path
+            if repo_path.exists() and local_path.exists():
+                # Both exist — deploy repo keys to local (merge), then collect local back to repo
+                # This effectively does a bidirectional partial merge
+                report.files_synced.append(f"{rule.path} (partial merge)")
+            elif repo_path.exists():
+                report.files_synced.append(f"{rule.path} (remote -> local, partial)")
+            elif local_path.exists():
+                report.files_synced.append(f"{rule.path} (local -> repo, partial)")
+            # Let the adapter's normal collect/deploy handle the actual merge
+
         if not file_paths:
+            # Still need to handle partial rules via adapter
+            if partial_rules and adapter.detect():
+                adapter.deploy()
+                adapter.collect()
             return
 
         repo_inv = build_file_inventory(repo_subdir, file_paths)
@@ -481,6 +507,11 @@ class Engine:
                     report.files_synced.append(f"{rel_path} (kept remote)")
                 else:
                     report.files_skipped.append(f"{rel_path} (skipped)")
+
+        # Handle partial rules via adapter's deploy/collect
+        if partial_rules and adapter.detect():
+            adapter.deploy()
+            adapter.collect()
 
     def _git_pull(self) -> None:
         """Run git pull on the repo directory."""
