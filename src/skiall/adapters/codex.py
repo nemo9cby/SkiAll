@@ -325,14 +325,17 @@ class CodexAdapter(BaseAdapter):
         # Walk ~/.codex/ for remaining syncable files
         if codex_dir.is_dir():
             for path in sorted(codex_dir.rglob("*")):
-                if not path.is_file():
-                    continue
                 rel = str(path.relative_to(codex_dir))
                 if rel == "config.toml":
                     continue  # Already handled above
                 if _is_excluded(rel):
                     report.files_skipped.append(rel)
                     continue
+                try:
+                    if not path.is_file():
+                        continue
+                except OSError:
+                    continue  # Inaccessible path (e.g., locked temp files on Windows)
                 dest = target / rel
                 try:
                     dest.parent.mkdir(parents=True, exist_ok=True)
