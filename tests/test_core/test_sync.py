@@ -145,3 +145,24 @@ class TestBuildFileInventory:
     def test_missing_path_skipped(self, tmp_path: Path):
         inv = build_file_inventory(tmp_path, ["nonexistent.txt"])
         assert inv == {}
+
+
+from unittest.mock import patch
+from skiall.core.sync import prompt_conflict, ConflictChoice
+
+
+class TestPromptConflict:
+    @patch("click.prompt", return_value="l")
+    def test_choose_local(self, mock_prompt):
+        choice = prompt_conflict("skill-creator", "skill")
+        assert choice == ConflictChoice.LOCAL
+
+    @patch("click.prompt", return_value="r")
+    def test_choose_remote(self, mock_prompt):
+        choice = prompt_conflict("skill-creator", "skill")
+        assert choice == ConflictChoice.REMOTE
+
+    @patch("click.prompt", return_value="s")
+    def test_choose_skip(self, mock_prompt):
+        choice = prompt_conflict("skill-creator", "skill")
+        assert choice == ConflictChoice.SKIP

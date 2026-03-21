@@ -9,6 +9,8 @@ import hashlib
 from enum import Enum
 from pathlib import Path
 
+import click
+
 
 class SyncAction(Enum):
     """Classification of an item during sync."""
@@ -16,6 +18,35 @@ class SyncAction(Enum):
     LOCAL_ONLY = "local_only"
     IDENTICAL = "identical"
     CONFLICT = "conflict"
+
+
+class ConflictChoice(Enum):
+    """User's choice when a conflict is detected."""
+    LOCAL = "local"
+    REMOTE = "remote"
+    SKIP = "skip"
+
+
+def prompt_conflict(name: str, item_type: str) -> ConflictChoice:
+    """Prompt the user to resolve a conflict interactively.
+
+    Args:
+        name: name of the conflicting item (e.g., "skill-creator")
+        item_type: type label for display (e.g., "skill", "file", "memory")
+
+    Returns:
+        user's choice
+    """
+    choice = click.prompt(
+        f'  "{name}" ({item_type}) differs. Keep (l)ocal, (r)emote, or (s)kip?',
+        type=click.Choice(["l", "r", "s"], case_sensitive=False),
+        default="s",
+    )
+    return {
+        "l": ConflictChoice.LOCAL,
+        "r": ConflictChoice.REMOTE,
+        "s": ConflictChoice.SKIP,
+    }[choice.lower()]
 
 
 def classify_items(
