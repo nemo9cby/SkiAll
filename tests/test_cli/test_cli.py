@@ -34,3 +34,22 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Initializing" in result.output
         assert (repo_dir / "skiall.yaml").exists()
+
+
+class TestSyncCLI:
+    def test_sync_no_repo_no_url_errors(self, tmp_path: Path):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--repo-dir", str(tmp_path / "nope"), "sync"])
+        assert result.exit_code != 0
+
+    def test_sync_with_url_invokes_engine(self, tmp_path: Path):
+        runner = CliRunner()
+        with patch("skiall.cli._make_engine") as mock_engine:
+            mock_eng = MagicMock()
+            mock_eng.sync.return_value = []
+            mock_engine.return_value = mock_eng
+            result = runner.invoke(
+                cli,
+                ["--repo-dir", str(tmp_path), "sync", "https://example.com/repo.git"],
+            )
+            mock_eng.sync.assert_called_once()

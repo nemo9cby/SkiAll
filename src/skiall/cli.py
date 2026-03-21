@@ -193,6 +193,37 @@ def diff(ctx: click.Context) -> None:
 
 
 @cli.command()
+@click.argument("repo_url", required=False, default=None)
+@click.option("-m", "--message", default="skiall sync", help="Commit message.")
+@click.pass_context
+def sync(ctx: click.Context, repo_url: str | None, message: str) -> None:
+    """Pull remote config, merge with local state, and push back.
+
+    First time: skiall sync <repo-url>
+    After that: skiall sync
+    """
+    repo_dir = ctx.obj["repo_dir"]
+    engine = _make_engine(repo_dir)
+
+    try:
+        reports = engine.sync(remote_url=repo_url, message=message)
+    except RuntimeError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        raise SystemExit(1)
+
+    has_errors = False
+    for report in reports:
+        _print_report(report)
+        if not report.success:
+            has_errors = True
+
+    if has_errors:
+        raise SystemExit(1)
+    else:
+        click.echo("\nSync complete!")
+
+
+@cli.command()
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON for scripting.")
 @click.pass_context
 def info(ctx: click.Context, as_json: bool) -> None:
