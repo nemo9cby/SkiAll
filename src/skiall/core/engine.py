@@ -128,6 +128,93 @@ def _sync_partial_toml(repo_path: Path, local_path: Path, keys: list[str]) -> No
     repo_path.write_text(_dump_toml(collected), encoding="utf-8")
 
 
+def _create_sub_skill_symlinks(skills_dir: Path, report: SyncReport) -> None:
+    """Create symlinks for nested sub-skills so Claude Code can discover them.
+
+    Claude Code discovers skills at ~/.claude/skills/*/SKILL.md (one level deep).
+    Skill bundles like gstack have sub-skills at gstack/browse/SKILL.md, etc.
+    This creates symlinks: ~/.claude/skills/browse -> gstack/browse
+    so each sub-skill is discoverable.
+
+    On Windows, uses directory junctions (no admin required) as fallback
+    when symlinks fail.
+    """
+    import os
+    import platform
+
+    for skill_dir in sorted(skills_dir.iterdir()):
+        if not skill_dir.is_dir() or skill_dir.is_symlink():
+            continue
+        # Skip hidden dirs (e.g., .system)
+        if skill_dir.name.startswith("."):
+            continue
+        # Check if this skill has sub-directories with SKILL.md
+        for sub_dir in sorted(skill_dir.iterdir()):
+            if not sub_dir.is_dir() or sub_dir.is_symlink():
+                continue
+            # Skip non-skill dirs (node_modules, bin, test, scripts, docs, etc.)
+            sub_skill_md = sub_dir / "SKILL.md"
+            if not sub_skill_md.is_file():
+                continue
+
+            link_path = skills_dir / sub_dir.name
+            abs_target = str(sub_dir.resolve())
+            rel_target = f"{skill_dir.name}/{sub_dir.name}"
+
+            if link_path.exists() and not link_path.is_symlink():
+                # Real directory exists with this name — don't overwrite
+                continue
+
+            try:
+                if link_path.is_symlink() or _is_junction(link_path):
+                    _remove_link(link_path)
+                os.symlink(rel_target, str(link_path))
+                report.files_synced.append(f"symlink: {sub_dir.name} -> {rel_target}")
+            except OSError:
+                if platform.system() == "Windows":
+                    # Fall back to directory junction (no admin required)
+                    try:
+                        if link_path.exists():
+                            _remove_link(link_path)
+                        subprocess.run(
+                            ["cmd.exe", "/c", "mklink", "/J", str(link_path), abs_target],
+                            check=True, capture_output=True,
+                        )
+                        report.files_synced.append(f"junction: {sub_dir.name} -> {rel_target}")
+                    except (OSError, subprocess.CalledProcessError):
+                        report.warnings.append(
+                            f"Could not link {sub_dir.name} -> {rel_target}"
+                        )
+                else:
+                    report.warnings.append(
+                        f"Could not create symlink {sub_dir.name} -> {rel_target}"
+                    )
+
+
+def _is_junction(path: Path) -> bool:
+    """Check if a path is a Windows directory junction."""
+    import platform
+    if platform.system() != "Windows":
+        return False
+    try:
+        import ctypes
+        FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+        return attrs != -1 and (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+    except (OSError, AttributeError):
+        return False
+
+
+def _remove_link(path: Path) -> None:
+    """Remove a symlink or junction."""
+    import platform
+    if platform.system() == "Windows" and path.is_dir():
+        # Junctions are directories on Windows — rmdir removes without deleting target
+        path.rmdir()
+    else:
+        path.unlink()
+
+
 class Engine:
     """Orchestrates adapter execution for pull/push operations."""
 
@@ -496,6 +583,11 @@ class Engine:
                     report.files_synced.append(f"skills/{name} (kept remote)")
                 else:
                     report.files_skipped.append(f"skills/{name} (skipped)")
+
+        # Create symlinks for nested sub-skills (e.g., gstack/browse -> browse)
+        # so Claude Code can discover them at ~/.claude/skills/*/SKILL.md
+        if local_skills.is_dir():
+            _create_sub_skill_symlinks(local_skills, report)
 
     def _sync_plugins(
         self, config_dir: Path, repo_subdir: Path, report: SyncReport
