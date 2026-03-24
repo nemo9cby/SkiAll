@@ -157,6 +157,9 @@ def build_skill_inventory(skills_dir: Path) -> dict[str, bytes]:
     for entry in sorted(skills_dir.iterdir()):
         if entry.is_symlink():
             continue
+        # Skip hidden/system directories (e.g., .system managed by Codex)
+        if entry.name.startswith("."):
+            continue
         if entry.is_dir():
             hasher = hashlib.sha256()
             for f in sorted(entry.rglob("*")):

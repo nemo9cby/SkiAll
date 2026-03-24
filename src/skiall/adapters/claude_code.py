@@ -327,10 +327,11 @@ class ClaudeCodeAdapter(BaseAdapter):
         repo_sub = self._repo_subdir
 
         for rule in self.get_sync_rules():
-            # plugins/installed_plugins.json is compared structurally by
-            # plugin names during sync, not byte-for-byte. The repo copy
-            # has installPath stripped so a raw diff always shows false changes.
+            # plugins/installed_plugins.json — compare by plugin names only,
+            # not byte-for-byte (installPath, gitCommitSha, timestamps are
+            # machine-specific and always differ across platforms)
             if rule.path.startswith("plugins"):
+                changes.extend(self._diff_plugins(repo_sub, config_dir))
                 continue
 
             repo_path = repo_sub / rule.path
@@ -429,6 +430,36 @@ class ClaudeCodeAdapter(BaseAdapter):
                     detail=f"Key '{key}' differs",
                 )
         return None
+
+    def _diff_plugins(self, repo_sub: Path, config_dir: Path) -> list[Change]:
+        """Compare plugins by name — ignore installPath, timestamps, etc."""
+        repo_file = repo_sub / "plugins" / "installed_plugins.json"
+        local_file = config_dir / "plugins" / "installed_plugins.json"
+
+        repo_names: set[str] = set()
+        local_names: set[str] = set()
+
+        if repo_file.is_file():
+            data = json.loads(repo_file.read_text(encoding="utf-8"))
+            repo_names = set(data.get("plugins", {}).keys())
+        if local_file.is_file():
+            data = json.loads(local_file.read_text(encoding="utf-8"))
+            local_names = set(data.get("plugins", {}).keys())
+
+        changes: list[Change] = []
+        for name in sorted(repo_names - local_names):
+            changes.append(Change(
+                path=f"plugins/{name}",
+                kind=ChangeKind.ADDED,
+                detail="Plugin in repo but not installed locally",
+            ))
+        for name in sorted(local_names - repo_names):
+            changes.append(Change(
+                path=f"plugins/{name}",
+                kind=ChangeKind.DELETED,
+                detail="Plugin installed locally but not in repo",
+            ))
+        return changes
 
     # ------------------------------------------------------------------ #
     # Info (local inventory, no repo needed)
