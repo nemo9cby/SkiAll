@@ -327,6 +327,12 @@ class ClaudeCodeAdapter(BaseAdapter):
         repo_sub = self._repo_subdir
 
         for rule in self.get_sync_rules():
+            # plugins/installed_plugins.json is compared structurally by
+            # plugin names during sync, not byte-for-byte. The repo copy
+            # has installPath stripped so a raw diff always shows false changes.
+            if rule.path.startswith("plugins"):
+                continue
+
             repo_path = repo_sub / rule.path
             local_path = config_dir / rule.path
 
